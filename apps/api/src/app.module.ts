@@ -38,6 +38,7 @@ import { QueueService } from './queue/queue.service.js';
 @Module({})
 export class AppModule {
   static forRoot(env: Env): DynamicModule {
+    const throttlerStorage = env.REDIS_URL ? new RedisThrottlerStorage(env.REDIS_URL) : undefined;
     return {
       module: AppModule,
       imports: [
@@ -74,7 +75,7 @@ export class AppModule {
           throttlers: [
             { name: 'default', ttl: 60_000, limit: env.RATE_LIMIT_DISABLED ? 1_000_000 : 300 },
           ],
-          storage: env.REDIS_URL ? new RedisThrottlerStorage(env.REDIS_URL) : undefined,
+          storage: throttlerStorage,
           skipIf: () => env.RATE_LIMIT_DISABLED,
         }),
       ],
@@ -94,6 +95,10 @@ export class AppModule {
         { provide: ENV, useValue: env },
         prismaProvider,
         PrismaLifecycle,
+        // Registered as a provider only so Nest closes its Redis connection on shutdown.
+        ...(throttlerStorage
+          ? [{ provide: RedisThrottlerStorage, useValue: throttlerStorage }]
+          : []),
         QueueService,
         SessionService,
         PasswordService,

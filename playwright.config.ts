@@ -29,7 +29,12 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
-  reporter: [['list'], ['html', { outputFolder: 'tests/e2e/report', open: 'never' }]],
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'tests/e2e/report', open: 'never' }],
+    // On GitHub Actions each failure also becomes an annotation on the job.
+    ...(process.env.GITHUB_ACTIONS ? [['github'] as ['github']] : []),
+  ],
   use: {
     baseURL: E2E.web,
     trace: 'retain-on-failure',

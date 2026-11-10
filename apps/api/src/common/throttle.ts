@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { ThrottlerGuard, type ThrottlerStorage } from '@nestjs/throttler';
 import { Redis } from 'ioredis';
 import type { AppRequest } from './context.js';
@@ -15,13 +15,16 @@ interface ThrottlerStorageRecord {
  * Shared rate-limit counters in Redis so limits hold across API replicas.
  * Fixed window per key: INCR + PEXPIRE NX in one round trip.
  */
-export class RedisThrottlerStorage implements ThrottlerStorage {
+export class RedisThrottlerStorage implements ThrottlerStorage, OnModuleDestroy {
   private readonly redis: Redis;
 
   constructor(url: string) {
+    // The offline queue stays enabled: requests arriving while the connection is still
+    // being established (right after boot) wait for it instead of failing with a 500.
+    // A short connect timeout plus maxRetriesPerRequest bound that wait if Redis is down.
     this.redis = new Redis(url, {
       maxRetriesPerRequest: 2,
-      enableOfflineQueue: false,
+      connectTimeout: 5_000,
       lazyConnect: false,
     });
   }
@@ -57,8 +60,8 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     };
   }
 
-  async close() {
-    await this.redis.quit();
+  async onModuleDestroy() {
+    await this.redis.quit().catch(() => this.redis.disconnect());
   }
 }
 

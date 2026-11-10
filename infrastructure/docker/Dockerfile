@@ -2,12 +2,16 @@
 # Multi-stage build for the whole monorepo. Targets: migrate, api, worker, web.
 #   docker build -f infrastructure/docker/Dockerfile --target api -t devpulse-api .
 
-ARG NODE_VERSION=22.12-bookworm-slim
+ARG NODE_VERSION=22-bookworm-slim
+ARG PNPM_VERSION=10.20.0
 
-# ───────── base: pnpm via corepack ─────────
+# ───────── base: pnpm installed from npm ─────────
+# Not corepack: older bundled corepack versions fail signature checks after npm's key
+# rotation, and corepack is no longer shipped with newer Node releases.
 FROM node:${NODE_VERSION} AS base
-ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH NEXT_TELEMETRY_DISABLED=1
-RUN corepack enable
+ARG PNPM_VERSION
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH NEXT_TELEMETRY_DISABLED=1 COREPACK_ENABLE_STRICT=0
+RUN npm install -g pnpm@${PNPM_VERSION} && pnpm --version
 WORKDIR /repo
 
 # ───────── deps: install with a cached store (manifests only, for layer caching) ─────────

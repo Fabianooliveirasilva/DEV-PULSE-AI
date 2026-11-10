@@ -1,0 +1,19 @@
+# Keep the build context small and free of host artifacts and secrets.
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/*.tsbuildinfo
+packages/database/src/generated
+.git
+.github
+.data
+.tools
+.mail-outbox
+.vscode
+.env
+.env.*
+!.env.example
+tests/e2e/report
+tests/e2e/results
+*.log
