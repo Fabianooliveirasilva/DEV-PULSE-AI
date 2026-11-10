@@ -1,0 +1,29 @@
+{
+  "name": "@devpulse/queue",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "bullmq": "6.7.2",
+    "ioredis": "5.11.1",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+dist
+.next
+coverage
+pnpm-lock.yaml
+.tools
+.data
+.mail-outbox
+tests/e2e/report
+tests/e2e/results
+packages/database/src/generated
+packages/database/prisma/migrations
+apps/web/src/components/ui
+apps/web/next-env.d.ts
+apps/web/AGENTS.md

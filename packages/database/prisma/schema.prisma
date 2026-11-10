@@ -1,0 +1,545 @@
+// DevPulse AI — relational model.
+// Multi-tenancy: every tenant-owned row carries `organizationId` (denormalised on hot tables)
+// so that every query can be scoped by organisation and indexed accordingly.
+// See docs/DATABASE.md for the ERD, deletion strategy and retention policy.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated"
+  moduleFormat = "esm"
+  runtime      = "nodejs"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [pg_trgm]
+}
+
+// ───────────────────────────── Identity & tenancy ─────────────────────────────
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model User {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  email        String    @unique @db.VarChar(254)
+  name         String    @db.VarChar(100)
+  passwordHash String    @db.VarChar(255)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+  memberships         OrganizationMember[]
+  assignedIncidents   Incident[]           @relation("IncidentAssignee")
+  incidentEvents      IncidentEvent[]
+  notifications       Notification[]
+  aiAnalyses          AIAnalysis[]
+  apiKeysCreated      ApiKey[]
+  auditLogs           AuditLog[]
+}
+
+/// Opaque server-side session. Only a SHA-256 hash of the cookie token is stored.
+model Session {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  userId     String   @db.Uuid
+  tokenHash  String   @unique @db.Char(64)
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  ipAddress  String?  @db.VarChar(64)
+  userAgent  String?  @db.VarChar(255)
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique @db.Char(64)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Organization {
+  id                     String   @id @default(uuid(7)) @db.Uuid
+  name                   String   @db.VarChar(100)
+  slug                   String   @unique @db.VarChar(64)
+  /// Monthly AI spend ceiling in USD; analyses are refused once reached.
+  aiMonthlyBudgetUsd     Decimal  @default(10) @db.Decimal(10, 2)
+  logRetentionDays       Int      @default(14)
+  checkRetentionDays     Int      @default(30)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  members              OrganizationMember[]
+  projects             Project[]
+  applications         Application[]
+  monitors             Monitor[]
+  monitorChecks        MonitorCheck[]
+  incidents            Incident[]
+  incidentEvents       IncidentEvent[]
+  logs                 Log[]
+  errorGroups          ErrorGroup[]
+  apiKeys              ApiKey[]
+  aiAnalyses           AIAnalysis[]
+  notifications        Notification[]
+  notificationChannels NotificationChannel[]
+  auditLogs            AuditLog[]
+  usageRecords         UsageRecord[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @db.Uuid
+  userId         String   @db.Uuid
+  role           OrgRole  @default(MEMBER)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+// ───────────────────────────── Monitoring ─────────────────────────────
+
+model Project {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @db.Uuid
+  name           String   @db.VarChar(100)
+  description    String?  @db.VarChar(500)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  applications Application[]
+
+  @@unique([organizationId, name])
+}
+
+enum AppEnvironment {
+  PRODUCTION
+  STAGING
+  DEVELOPMENT
+}
+
+model Application {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  organizationId String         @db.Uuid
+  projectId      String         @db.Uuid
+  name           String         @db.VarChar(100)
+  description    String?        @db.VarChar(500)
+  environment    AppEnvironment @default(PRODUCTION)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  monitors     Monitor[]
+  incidents    Incident[]
+  logs         Log[]
+  errorGroups  ErrorGroup[]
+  apiKeys      ApiKey[]
+  notifications Notification[]
+
+  @@unique([organizationId, name])
+  @@index([projectId])
+}
+
+enum HttpMethod {
+  GET
+  HEAD
+  POST
+}
+
+enum MonitorStatus {
+  PENDING
+  UP
+  DEGRADED
+  DOWN
+  PAUSED
+}
+
+model Monitor {
+  id                  String        @id @default(uuid(7)) @db.Uuid
+  organizationId      String        @db.Uuid
+  applicationId       String        @db.Uuid
+  name                String        @db.VarChar(100)
+  url                 String        @db.VarChar(2048)
+  method              HttpMethod    @default(GET)
+  /// Accepted HTTP status codes. Empty array means "any 2xx".
+  expectedStatusCodes Int[]         @default([])
+  intervalSeconds     Int           @default(60)
+  timeoutMs           Int           @default(10000)
+  failureThreshold    Int           @default(3)
+  latencyThresholdMs  Int?
+  isActive            Boolean       @default(true)
+  status              MonitorStatus @default(PENDING)
+  consecutiveFailures Int           @default(0)
+  lastCheckedAt       DateTime?
+  lastLatencyMs       Int?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  application  Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  checks       MonitorCheck[]
+  incidents    Incident[]
+
+  @@index([organizationId, status])
+  @@index([applicationId])
+}
+
+enum CheckResult {
+  UP
+  DEGRADED
+  DOWN
+}
+
+enum CheckErrorType {
+  TIMEOUT
+  DNS
+  CONNECTION
+  TLS
+  STATUS_CODE
+  BLOCKED_DESTINATION
+  TOO_MANY_REDIRECTS
+  UNKNOWN
+}
+
+model MonitorCheck {
+  id             String          @id @default(uuid(7)) @db.Uuid
+  organizationId String          @db.Uuid
+  monitorId      String          @db.Uuid
+  /// Idempotency key derived from the scheduler slot; a retried job cannot record twice.
+  idempotencyKey String          @unique @db.VarChar(128)
+  result         CheckResult
+  statusCode     Int?
+  latencyMs      Int?
+  errorType      CheckErrorType?
+  errorMessage   String?         @db.VarChar(500)
+  checkedAt      DateTime        @default(now())
+  /// Set when this check contributed to opening an incident.
+  incidentId     String?         @db.Uuid
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  monitor      Monitor      @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  incident     Incident?    @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+
+  @@index([monitorId, checkedAt(sort: Desc)])
+  @@index([organizationId, checkedAt])
+  @@index([incidentId])
+}
+
+// ───────────────────────────── Incidents ─────────────────────────────
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  IDENTIFIED
+  MONITORING
+  RESOLVED
+}
+
+enum IncidentSource {
+  MONITOR
+  MANUAL
+  ERROR_SPIKE
+}
+
+model Incident {
+  id              String         @id @default(uuid(7)) @db.Uuid
+  organizationId  String         @db.Uuid
+  applicationId   String         @db.Uuid
+  monitorId       String?        @db.Uuid
+  /// Equals monitorId while the incident is unresolved: guarantees at most one open
+  /// automatic incident per monitor even under concurrent workers.
+  activeMonitorId String?        @unique @db.Uuid
+  title           String         @db.VarChar(200)
+  severity        Severity
+  status          IncidentStatus @default(OPEN)
+  source          IncidentSource
+  probableCause   String?        @db.VarChar(2000)
+  resolutionNote  String?        @db.VarChar(2000)
+  assigneeId      String?        @db.Uuid
+  openedAt        DateTime       @default(now())
+  resolvedAt      DateTime?
+  updatedAt       DateTime       @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  application  Application     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  monitor      Monitor?        @relation(fields: [monitorId], references: [id], onDelete: SetNull)
+  assignee     User?           @relation("IncidentAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  events       IncidentEvent[]
+  checks       MonitorCheck[]
+  aiAnalyses   AIAnalysis[]
+  notifications Notification[]
+
+  @@index([organizationId, status, openedAt(sort: Desc)])
+  @@index([applicationId, openedAt(sort: Desc)])
+}
+
+enum IncidentEventType {
+  CREATED
+  STATUS_CHANGED
+  SEVERITY_CHANGED
+  ASSIGNED
+  CAUSE_UPDATED
+  COMMENT
+  CHECK_FAILED
+  RECOVERED
+  AI_ANALYSIS
+}
+
+model IncidentEvent {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  organizationId String            @db.Uuid
+  incidentId     String            @db.Uuid
+  type           IncidentEventType
+  actorId        String?           @db.Uuid
+  message        String            @db.VarChar(4000)
+  fromStatus     IncidentStatus?
+  toStatus       IncidentStatus?
+  createdAt      DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  incident     Incident     @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  actor        User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([incidentId, createdAt])
+}
+
+// ───────────────────────────── Logs ─────────────────────────────
+
+enum LogSeverity {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  FATAL
+}
+
+/// Hashed ingestion key scoped to one application. Plain key is shown once at creation.
+model ApiKey {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @db.Uuid
+  applicationId  String    @db.Uuid
+  name           String    @db.VarChar(100)
+  prefix         String    @db.VarChar(16)
+  keyHash        String    @unique @db.Char(64)
+  createdById    String?   @db.Uuid
+  lastUsedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  application  Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([applicationId])
+}
+
+/// Logs sharing a normalised message fingerprint (numbers/ids/uuids stripped).
+model ErrorGroup {
+  id             String      @id @default(uuid(7)) @db.Uuid
+  organizationId String      @db.Uuid
+  applicationId  String      @db.Uuid
+  fingerprint    String      @db.Char(64)
+  title          String      @db.VarChar(300)
+  errorType      String?     @db.VarChar(120)
+  severity       LogSeverity
+  count          Int         @default(0)
+  firstSeenAt    DateTime
+  lastSeenAt     DateTime
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  application  Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  logs         Log[]
+  aiAnalyses   AIAnalysis[]
+
+  @@unique([applicationId, fingerprint])
+  @@index([organizationId, lastSeenAt(sort: Desc)])
+}
+
+model Log {
+  id             String      @id @default(uuid(7)) @db.Uuid
+  organizationId String      @db.Uuid
+  applicationId  String      @db.Uuid
+  errorGroupId   String?     @db.Uuid
+  timestamp      DateTime
+  receivedAt     DateTime    @default(now())
+  severity       LogSeverity
+  environment    String      @db.VarChar(32)
+  message        String      @db.VarChar(8192)
+  /// Redacted, size-bounded structured context supplied by the client (max 8 KB).
+  metadata       Json?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  application  Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  errorGroup   ErrorGroup?  @relation(fields: [errorGroupId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, timestamp(sort: Desc)])
+  @@index([applicationId, timestamp(sort: Desc)])
+  @@index([errorGroupId])
+  @@index([message(ops: raw("gin_trgm_ops"))], type: Gin, map: "Log_message_trgm_idx")
+}
+
+// ───────────────────────────── AI ─────────────────────────────
+
+enum AIAnalysisTarget {
+  INCIDENT
+  ERROR_GROUP
+}
+
+enum AIAnalysisStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  NOT_CONFIGURED
+  BUDGET_EXCEEDED
+}
+
+model AIAnalysis {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  organizationId String           @db.Uuid
+  targetType     AIAnalysisTarget
+  incidentId     String?          @db.Uuid
+  errorGroupId   String?          @db.Uuid
+  status         AIAnalysisStatus @default(PENDING)
+  promptVersion  String           @db.VarChar(32)
+  provider       String?          @db.VarChar(32)
+  model          String?          @db.VarChar(64)
+  summary        String?          @db.VarChar(2000)
+  severity       Severity?
+  /// Schema-validated structured output (see packages/ai/src/schemas.ts).
+  result         Json?
+  errorMessage   String?          @db.VarChar(1000)
+  requestedById  String?          @db.Uuid
+  createdAt      DateTime         @default(now())
+  completedAt    DateTime?
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  incident     Incident?     @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  errorGroup   ErrorGroup?   @relation(fields: [errorGroupId], references: [id], onDelete: Cascade)
+  requestedBy  User?         @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+  usageRecords UsageRecord[]
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([incidentId])
+  @@index([errorGroupId])
+}
+
+model UsageRecord {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  organizationId   String   @db.Uuid
+  aiAnalysisId     String?  @db.Uuid
+  provider         String   @db.VarChar(32)
+  model            String   @db.VarChar(64)
+  inputTokens      Int
+  outputTokens     Int
+  cacheReadTokens  Int      @default(0)
+  cacheWriteTokens Int      @default(0)
+  costUsd          Decimal  @db.Decimal(12, 6)
+  createdAt        DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  aiAnalysis   AIAnalysis?  @relation(fields: [aiAnalysisId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}
+
+// ───────────────────────────── Notifications ─────────────────────────────
+
+enum NotificationType {
+  MONITOR_DOWN
+  MONITOR_RECOVERED
+  ERROR_SPIKE
+  INCIDENT_CRITICAL
+  LATENCY_THRESHOLD
+}
+
+model Notification {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  organizationId String           @db.Uuid
+  userId         String           @db.Uuid
+  type           NotificationType
+  title          String           @db.VarChar(200)
+  body           String           @db.VarChar(1000)
+  incidentId     String?          @db.Uuid
+  applicationId  String?          @db.Uuid
+  readAt         DateTime?
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  incident     Incident?    @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  application  Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, organizationId, readAt, createdAt(sort: Desc)])
+}
+
+enum ChannelType {
+  EMAIL
+  WEBHOOK
+}
+
+/// External delivery targets. In-app notifications are always on and need no channel.
+model NotificationChannel {
+  id             String             @id @default(uuid(7)) @db.Uuid
+  organizationId String             @db.Uuid
+  type           ChannelType
+  name           String             @db.VarChar(100)
+  target         String             @db.VarChar(2048)
+  events         NotificationType[]
+  isEnabled      Boolean            @default(true)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+// ───────────────────────────── Audit ─────────────────────────────
+
+model AuditLog {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String?  @db.Uuid
+  actorId        String?  @db.Uuid
+  action         String   @db.VarChar(64)
+  targetType     String?  @db.VarChar(64)
+  targetId       String?  @db.VarChar(64)
+  ipAddress      String?  @db.VarChar(64)
+  details        Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?         @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([actorId])
+}

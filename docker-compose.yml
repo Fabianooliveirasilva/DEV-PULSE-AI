@@ -1,0 +1,121 @@
+# Full local stack. Usage:
+#   cp .env.example .env   # set METRICS_TOKEN, optionally ANTHROPIC_API_KEY
+#   docker compose up --build
+# Web: http://localhost:3000 · API docs: http://localhost:4000/api/docs (non-production)
+# Grafana: http://localhost:3001 (admin / $GRAFANA_ADMIN_PASSWORD) · Prometheus: http://localhost:9090
+
+x-app-env: &app-env
+  NODE_ENV: ${NODE_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: postgresql://devpulse:${POSTGRES_PASSWORD:-devpulse}@postgres:5432/devpulse
+  QUEUE_BACKEND: redis
+  REDIS_URL: redis://redis:6379
+  METRICS_TOKEN: ${METRICS_TOKEN:?set METRICS_TOKEN in .env}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:3000}
+  SMTP_URL: ${SMTP_URL:-}
+  MAIL_OUTBOX_DIR: ${COMPOSE_MAIL_OUTBOX_DIR:-/tmp/mail-outbox}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: devpulse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpulse}
+      POSTGRES_DB: devpulse
+    ports: ['5432:5432']
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U devpulse']
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
+    ports: ['6379:6379']
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 10
+
+  migrate:
+    build: { context: ., dockerfile: infrastructure/docker/Dockerfile, target: migrate }
+    environment:
+      DATABASE_URL: postgresql://devpulse:${POSTGRES_PASSWORD:-devpulse}@postgres:5432/devpulse
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: 'no'
+
+  api:
+    build: { context: ., dockerfile: infrastructure/docker/Dockerfile, target: api }
+    environment:
+      <<: *app-env
+      PORT: 4000
+      WEB_ORIGINS: ${WEB_ORIGINS:-http://localhost:3000}
+      TRUST_PROXY: 1
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports: ['4000:4000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  worker:
+    build: { context: ., dockerfile: infrastructure/docker/Dockerfile, target: worker }
+    environment:
+      <<: *app-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-10}
+      WORKER_METRICS_PORT: 9464
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+    # Bounded memory: a runaway worker is restarted instead of starving the host.
+    deploy:
+      resources:
+        limits: { memory: 512m }
+
+  web:
+    build: { context: ., dockerfile: infrastructure/docker/Dockerfile, target: web }
+    environment:
+      API_INTERNAL_URL: http://api:4000
+    ports: ['3000:3000']
+    depends_on: [api]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN}
+    # Prometheus does not expand env vars in its config: write the bearer token to a file first.
+    entrypoint:
+      [
+        '/bin/sh',
+        '-c',
+        'printf %s "$$METRICS_TOKEN" > /tmp/metrics-token && exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus',
+      ]
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports: ['9090:9090']
+    depends_on: [api, worker]
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports: ['3001:3000']
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:
+  redisdata:
+  promdata:
+  grafanadata:
