@@ -44,7 +44,7 @@ Logs 14 days and checks 30 days by default (configurable per organisation, max 9
 | Webhook signing (HMAC)                   | Not implemented; recipients cannot verify origin yet.                                                                              |
 | CSP on the web app                       | Security headers are set; a nonce-based CSP for Next.js is not configured yet.                                                     |
 | Container image size                     | ~450 MB per backend image (Prisma CLI is pulled as a peer of `@prisma/client`); no vulnerability impact but larger attack surface. |
-| Docker images                            | Built in CI; not executed in the original development environment (no Docker available there).                                     |
+| Docker images                            | Built in CI; the full Compose stack has not been run end to end yet (no Docker on the development machine).                        |
 
 ## Reporting
 

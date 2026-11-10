@@ -1,6 +1,6 @@
 # Project status
 
-_Last updated: 2026-11-10. Phases 0–7 completed in the development environment. Items that could only be verified elsewhere are listed under "Pending verification"._
+_Last updated: 2026-11-10. Phases 0–7 completed. GitHub Actions is green on `main` (all jobs, including integration and E2E on Redis and all Docker image builds). Remaining unverified items are listed under "Pending verification"._
 
 ## Phases
 
@@ -13,7 +13,7 @@ _Last updated: 2026-11-10. Phases 0–7 completed in the development environment
 | 4 — Incidents, logs, notifications, dashboard on real data                             | ✅                                                           |
 | 5 — AI intelligence (Anthropic provider, prompts, context builder, validator, budgets) | ✅ implemented and tested with mocks; live API not exercised |
 | 6 — QA automation (unit, API, integration, E2E, negative and security tests)           | ✅                                                           |
-| 7 — Hardening, Docker, CI, documentation                                               | ✅ written; Docker/CI pending first execution (see below)    |
+| 7 — Hardening, Docker, CI, documentation                                               | ✅ CI green; images build; Compose stack not yet run         |
 
 ## Acceptance criteria
 
@@ -25,7 +25,7 @@ _Last updated: 2026-11-10. Phases 0–7 completed in the development environment
 | Authentication functional                              | ✅                                                                                             |
 | Multi-tenancy implemented and tested                   | ✅                                                                                             |
 | Real HTTP monitoring                                   | ✅                                                                                             |
-| Workers and queues functional                          | ✅ locally on BullMQ's PostgreSQL backend; Redis path runs in CI                               |
+| Workers and queues functional                          | ✅ PostgreSQL backend (local) and Redis backend (CI) both tested                               |
 | Dashboard on real data                                 | ✅                                                                                             |
 | Incident management                                    | ✅                                                                                             |
 | Logs                                                   | ✅                                                                                             |
@@ -33,13 +33,13 @@ _Last updated: 2026-11-10. Phases 0–7 completed in the development environment
 | Error handling                                         | ✅                                                                                             |
 | Security reviewed                                      | ✅ see docs/SECURITY.md (known gaps listed)                                                    |
 | Unit / integration / API / E2E tests passing           | ✅ 144 / 68 / (incl.) / 14                                                                     |
-| Docker functional                                      | ⚠️ written, not executed locally (no Docker); deploy bundle validated                          |
-| GitHub Actions functional                              | ⚠️ written, not yet run (no remote repository)                                                 |
+| Docker functional                                      | ✅ all 4 images build in CI; ⚠️ full `docker compose up` not yet run                           |
+| GitHub Actions functional                              | ✅ green on `main`                                                                             |
 | Documentation & README                                 | ✅                                                                                             |
 | No credentials exposed                                 | ✅ `.env` git-ignored; audit shows no secrets in tracked files                                 |
 | Nothing presented as done that is not                  | ✅ statuses above and in README                                                                |
 
-## Test results (local)
+## Test results (local and CI)
 
 | Suite                                                              | Passed |
 | ------------------------------------------------------------------ | ------ |
@@ -59,12 +59,17 @@ _Last updated: 2026-11-10. Phases 0–7 completed in the development environment
 - React effects calling `setState` (flagged by the React hooks linter) refactored.
 - UI: chart axis label wrapping, duplicate reference label, sparse-data markers, nested interactive elements in the monitoring list.
 
-## Pending verification (requires resources not available in the development environment)
+### Found by the first CI run
 
-1. `docker compose up --build` (CI `docker` job builds the images on the first push).
-2. First GitHub Actions run (integration and E2E suites on Redis).
-3. A live Anthropic analysis: set `ANTHROPIC_API_KEY` and request an analysis from an incident.
-4. Prometheus/Grafana scraping inside Compose.
+- **Redis rate-limit storage returned 500 right after boot**: ioredis was created with `enableOfflineQueue: false`, so requests that arrived before the connection was ready failed. The offline queue is now on (bounded by a connect timeout), and the connection is closed on shutdown.
+- **Docker `pnpm install` failed**: the `node:22.12` image's bundled corepack cannot verify npm's rotated signing keys. pnpm is now installed with npm on the current Node 22 image, and a `.dockerignore` keeps host `node_modules`, build output and `.env` out of the build context.
+- CI diagnostics: Playwright failures are reported as GitHub annotations, and integration suites run with `--no-bail`.
+
+## Pending verification
+
+1. A live Anthropic analysis: set `ANTHROPIC_API_KEY` and request an analysis from an incident.
+2. `docker compose up --build` running the full stack end to end (images already build in CI).
+3. Prometheus/Grafana scraping inside Compose.
 
 ## Known gaps / next tasks
 

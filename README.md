@@ -2,6 +2,8 @@
 
 # DevPulse AI
 
+[![CI](https://github.com/Fabianooliveirasilva/DEV-PULSE-AI/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Fabianooliveirasilva/DEV-PULSE-AI/actions/workflows/ci.yml)
+
 **Monitoring, incident management and AI error intelligence for web apps and APIs.**
 
 DevPulse AI checks your endpoints, opens incidents when they fail, groups your errors, and uses Claude to explain them, keeping what the evidence shows separate from what is only a hypothesis.
@@ -129,7 +131,7 @@ pnpm test:integration     # API + worker against PostgreSQL
 pnpm build && pnpm test:e2e && pnpm test:e2e:report
 ```
 
-Latest local run: **144 unit**, **68 integration** (51 API + 17 worker) and **14 Playwright E2E** tests passing. See [docs/TESTING.md](docs/TESTING.md) for what each suite covers.
+**144 unit**, **68 integration** (51 API + 17 worker) and **14 Playwright E2E** tests pass locally and in GitHub Actions, where integration and E2E run against PostgreSQL 17 and Redis. See [docs/TESTING.md](docs/TESTING.md) for what each suite covers.
 
 ## Feature status
 
@@ -144,8 +146,8 @@ Latest local run: **144 unit**, **68 integration** (51 API + 17 worker) and **14
 | In-app notifications; webhook & e-mail delivery              | ✅ Implemented and tested (webhooks are not HMAC-signed yet)                                                                                         |
 | AI analysis with Anthropic                                   | ✅ Implemented, tested with a mocked transport and provider. ⚠️ **Not yet exercised against the live API** (no key was available during development) |
 | Prometheus metrics, Grafana dashboard                        | ✅ Implemented. Endpoints tested; Grafana provisioning not run locally                                                                               |
-| Dockerfiles & Compose                                        | ⚠️ Written; built in CI. Not executed on the development machine (no Docker). The production bundle used by the images was validated                 |
-| GitHub Actions                                               | ⚠️ Written; first run happens on the first push                                                                                                      |
+| Dockerfiles & Compose                                        | ✅ All four images (`migrate`, `api`, `worker`, `web`) build in CI. ⚠️ The full `docker compose up` stack has not been run end to end yet            |
+| GitHub Actions                                               | ✅ Green: quality, integration (PostgreSQL + Redis), E2E, Docker builds, dependency audit and CodeQL                                                 |
 
 ## Roadmap
 

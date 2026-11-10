@@ -69,4 +69,4 @@ The images are platform-agnostic. Typical mappings: AWS ECS/Fargate + RDS + Elas
 
 Publishing images and deploying are environment-specific and intentionally not included; add a job that pushes to your registry on tags.
 
-> **Verification status:** the Dockerfile and compose file were written but could not be executed on the original development machine (no Docker). The production `pnpm deploy` bundle used by the images _was_ validated by starting the API from it. The CI `docker` job is the first full build.
+> **Verification status:** all four image targets build successfully in the CI `docker` job, and the production `pnpm deploy` bundle used by the API and worker images was validated by starting it. The complete `docker compose up` stack (including Prometheus and Grafana) has not yet been run end to end, because the original development machine has no Docker.
